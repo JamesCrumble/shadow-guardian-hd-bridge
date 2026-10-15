@@ -1,0 +1,31 @@
+# Third-party toolchains, sources and downloads (fetched locally, never committed)
+/android-sdk/
+/jdk/
+/downloads/
+/qemu-src/
+/sdl-arm/
+# Game data is the player's own (Gameloft), never the repo's
+/sgdata/
+/extracted/
+# Runtime, logs, archives
+/ctl/
+/logs/
+/donor/
+/session-files/
+# Build outputs
+/qemu/obj-*/
+/qemu/out/
+/qemu/orig/
+/qemu/*.log
+/qemu/.build_variant_lf.sh
+/tools/restructure.sh
+/tools/fix_paths.py
+__pycache__/
+*.apk
+*.idsig
+/scratch/
+/release/
+/port/android/build/release.*
+release.pass
+# Game files are the player's own (never committed)
+/gamebin/
