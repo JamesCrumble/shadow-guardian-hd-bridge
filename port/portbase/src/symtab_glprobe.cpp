@@ -1333,6 +1333,36 @@ static void viewport_scale_autoarm(void)
     viewport_scale_init(pw, ph);
 }
 
+/*
+ * Aspect correction for a panel wider than the logical screen, in SCALE=stretch mode with <PREFIX>_UI_ADAPT=1.
+ * The engine lays everything out for its logical panel and the viewport above stretches that over the real
+ * one, so a circle comes out an ellipse. The GL bridge undoes it per draw (2D elements keep their proportions
+ * and sit at the left, centre or right edge; the 3D scene gets the wider field of view the panel allows);
+ * what it needs is the factor the picture was stretched by: logical aspect over panel aspect (<= 1), or 1 when
+ * nothing is to be done.
+ */
+extern "C" float gl_screen_aspect_fix(void)
+{
+    static float s = -1.0f;
+    if (s >= 0.0f)
+        return s;
+    s = 1.0f;
+    if (g_scale_active && g_dst_w > 0 && g_dst_h > 0 && glprobe_env_int(port_env_name("UI_ADAPT"), 0)) {
+        float f = ((float)g_log_w / (float)g_log_h) / ((float)g_dst_w / (float)g_dst_h);
+        if (f < 0.999f && f > 0.25f)
+            s = f;
+        trace("screen adaptation: logical %dx%d on a %dx%d panel, factor %.3f", g_log_w, g_log_h, (int)g_dst_w,
+              (int)g_dst_h, s);
+    }
+    return s;
+}
+
+/* The panel's width in pixels while the picture is stretched over it (0 otherwise). */
+extern "C" int gl_screen_panel_width(void)
+{
+    return g_scale_active ? (int)g_dst_w : 0;
+}
+
 /* The engine's one full-screen viewport, the only one we remap. */
 static inline int is_fullscreen_viewport(GLint x, GLint y,
                                          GLsizei w, GLsizei h)

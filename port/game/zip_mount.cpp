@@ -510,5 +510,20 @@ bool sg_zip_mount_copy_up(const char *path)
     return ok;
 }
 
+bool sg_data_has_dir(const char *name)
+{
+    /* With an archive mounted only the archive counts: mounting creates its directories on disk, and the
+     * game folder is shared by the editions, so empty ones left by the other edition's archive are there. */
+    if (g_zip) {
+        pthread_mutex_lock(&g_lock);
+        bool found = g_dirs.find(name) != g_dirs.end();
+        pthread_mutex_unlock(&g_lock);
+        return found;
+    }
+    struct stat st;
+    std::string path = std::string(sg_data_dir()) + "/" + name;
+    return stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+}
+
 long sg_zip_mount_served(void)   { return g_served; }
 long sg_zip_mount_inflated(void) { return g_inflated; }

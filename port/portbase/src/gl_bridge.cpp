@@ -345,6 +345,30 @@ static Attrib g_attr[kMaxAttribs];
 static std::map<std::pair<uint32_t, std::string>, int> g_attrib_loc;
 static std::map<std::pair<uint32_t, std::string>, int> g_uniform_loc;
 
+/*
+ * Where the two position matrices live in each program. The caches above are wiped by every glLinkProgram
+ * and the engine keeps the locations it was given, so what the screen-adaptation code needs is kept apart.
+ */
+enum { kMaxProgs = 256 };
+static int g_loc_2d[kMaxProgs], g_loc_wvp[kMaxProgs];
+static bool g_loc_init;
+static void g_ui_mat_reset(GLuint program);
+
+static void note_uniform_loc(uint32_t program, const std::string &name, int loc)
+{
+    if (!g_loc_init) {
+        for (int i = 0; i < kMaxProgs; i++)
+            g_loc_2d[i] = g_loc_wvp[i] = -1;
+        g_loc_init = true;
+    }
+    if (program >= (uint32_t)kMaxProgs)
+        return;
+    if (name.compare(0, 16, "inViewProjMatrix") == 0)
+        g_loc_2d[program] = loc;
+    else if (name.compare(0, 20, "inWorldViewProjMatri") == 0)
+        g_loc_wvp[program] = loc;
+}
+
 static int comps(GLenum f)
 {
     switch (f) {
@@ -469,6 +493,8 @@ static void program_info_fetch(GLuint program)
             /* Locations go straight into the caches glGet*Location reads. */
             std::map<std::pair<uint32_t, std::string>, int> &cache = pass == 0 ? g_attrib_loc : g_uniform_loc;
             cache[std::make_pair((uint32_t)program, var.name)] = v[2];
+            if (pass == 1)
+                note_uniform_loc((uint32_t)program, var.name, v[2]);
             if (pass == 1 && var.name.size() > 3 && var.name.compare(var.name.size() - 3, 3, "[0]") == 0)
                 cache[std::make_pair((uint32_t)program, var.name.substr(0, var.name.size() - 3))] = v[2];
         }
@@ -491,6 +517,10 @@ static void gb_glLinkProgram(GLuint program)
     /* Linking resets the program's uniforms; forget what they held. */
     if (program < g_uni.size())
         g_uni[program].clear();
+    if (program < (GLuint)kMaxProgs) {
+        g_loc_2d[program] = g_loc_wvp[program] = -1;
+        g_ui_mat_reset(program);
+    }
     g_port_frame.links++;
     gb_raw_glLinkProgram(program);
     program_info_fetch(program);
@@ -826,6 +856,17 @@ static void gbf_glUseProgram(GLuint program)
     gb_glUseProgram(program);
 }
 
+extern "C" float gl_screen_aspect_fix(void);
+
+static GLuint g_cur_fbo;   /* 0 = the screen */
+
+static void gbf_glBindFramebuffer(GLenum target, GLuint fb)
+{
+    if (target == 0x8D40)
+        g_cur_fbo = fb;
+    gb_glBindFramebuffer(target, fb);
+}
+
 static void gbf_glActiveTexture(GLenum unit)
 {
     if (unit == g_active_unit)
@@ -876,11 +917,43 @@ static void gb_glUniform1fv(GLint l, GLsizei c, const GLfloat *v) { uniform_v(0,
 static void gb_glUniform1iv(GLint l, GLsizei c, const GLint *v) { uniform_v(1, 1, l, c, v, 0); }
 static void gb_glUniform2fv(GLint l, GLsizei c, const GLfloat *v) { uniform_v(2, 2, l, c, v, 0); }
 static void gb_glUniform2iv(GLint l, GLsizei c, const GLint *v) { uniform_v(3, 2, l, c, v, 0); }
-static void gb_glUniform3fv(GLint l, GLsizei c, const GLfloat *v) { uniform_v(4, 3, l, c, v, 0); }
+struct UiMat { bool valid; float m[6]; };
+static UiMat g_ui_mat[kMaxProgs];    /* [program] the 2D shaders' inViewProjMatrix[2] (a 2x3 affine) */
+static UiMat g_ui_sent[kMaxProgs];   /* what the host holds when it is not the engine's own matrix */
+static void g_ui_mat_reset(GLuint program) { g_ui_mat[program].valid = false; g_ui_sent[program].valid = false; }
+
+static void gb_glUniform3fv(GLint l, GLsizei c, const GLfloat *v)
+{
+    if (c == 2 && v && g_cur_prog < (GLuint)kMaxProgs && g_loc_2d[g_cur_prog] == l) {
+        g_ui_mat[g_cur_prog].valid = true;
+        memcpy(g_ui_mat[g_cur_prog].m, v, sizeof(float) * 6);
+        g_ui_sent[g_cur_prog].valid = false;   /* the host holds the engine's matrix again */
+    }
+    uniform_v(4, 3, l, c, v, 0);
+}
 static void gb_glUniform3iv(GLint l, GLsizei c, const GLint *v) { uniform_v(5, 3, l, c, v, 0); }
 static void gb_glUniform4fv(GLint l, GLsizei c, const GLfloat *v) { uniform_v(6, 4, l, c, v, 0); }
 static void gb_glUniform4iv(GLint l, GLsizei c, const GLint *v) { uniform_v(7, 4, l, c, v, 0); }
-static void gb_glUniformMatrix4fv(GLint l, GLsizei c, GLboolean t, const GLfloat *v) { uniform_v(8, 16, l, c, v, t); }
+static void gb_glUniformMatrix4fv(GLint l, GLsizei c, GLboolean t, const GLfloat *v)
+{
+    /* Screen adaptation, 3D side: clip.x * s widens the field of view to the panel's aspect (see
+     * gl_screen_aspect_fix). Offscreen passes (shadow maps and the like) keep their own matrices. */
+    static float s = -1.0f;
+    if (s < 0.0f)
+        s = gl_screen_aspect_fix();
+    if (s < 0.999f && c == 1 && v && g_cur_fbo == 0 && g_cur_prog < (GLuint)kMaxProgs && g_loc_wvp[g_cur_prog] == l) {
+        float m[16];
+        memcpy(m, v, sizeof(m));
+        if (t) {
+            for (int i = 0; i < 4; i++) m[i] *= s;
+        } else {
+            m[0] *= s; m[4] *= s; m[8] *= s; m[12] *= s;
+        }
+        uniform_v(8, 16, l, 1, m, t);
+        return;
+    }
+    uniform_v(8, 16, l, c, v, t);
+}
 
 /* ------------------------------------------------------------ draws */
 
@@ -991,13 +1064,165 @@ static size_t blocks_bytes(const std::vector<Block> &blocks)
     return n;
 }
 
+static bool prog_has_texture(GLuint program)
+{
+    const ProgInfo *pi = program_info(program);
+    if (!pi)
+        return true;
+    for (size_t i = 0; i < pi->unis.size(); i++)
+        if (pi->unis[i].name == "texture0")
+            return true;
+    return false;
+}
+
+/*
+ * Screen adaptation, 2D side. The engine draws its interface in its logical 5:3 panel and the viewport
+ * stretches that over a wider screen. Each 2D draw is one element (a quad, a text run), so its place is
+ * decided from the vertices: where it sits on the logical panel says where it belongs on the real one.
+ *   touching the left edge, or left of the middle -> pinned to the left edge   n' = -1 + s (n + 1)
+ *   touching the right edge, or right of it        -> pinned to the right edge  n' =  1 - s (1 - n)
+ *   in the middle                                   -> centred                   n' = s n
+ *   full width, textured (art, banners)             -> centred, in 5:3
+ *   full width, flat colour (fades)                 -> left stretched over the whole screen
+ * (n is x in clip space, s the factor from gl_screen_aspect_fix). The change is made to the matrix the shader
+ * reads, one uniform per draw, so no vertex data is touched. GameProcess.mapTouch undoes the same mapping
+ * for touches; the thresholds must agree.
+ */
+/* The interface elements of the frame being drawn and of the one before: their box on the logical panel and where they went. */
+struct UiRect { float x0, x1, y0, y1; int cls; };   /* cls: -1 pinned left, 0 centred, 1 pinned right */
+static std::vector<UiRect> g_ui_cur, g_ui_prev;
+
+static inline float ui_forward(float n, int cls, float s)
+{
+    return cls < 0 ? s * n + (s - 1.0f) : cls > 0 ? s * n + (1.0f - s) : s * n;
+}
+
+static void ui_adapt(GLint v0, GLsizei n)
+{
+    static float s = -1.0f;
+    if (s < 0.0f)
+        s = gl_screen_aspect_fix();
+    if (s >= 0.999f || n <= 0 || n > 60000 || g_cur_prog >= (GLuint)kMaxProgs || !g_ui_mat[g_cur_prog].valid ||
+        g_loc_2d[g_cur_prog] < 0)
+        return;
+    const Attrib *a = NULL;
+    for (int i = 0; i < kMaxAttribs && !a; i++)
+        if (g_attr[i].enabled && g_attr[i].client && g_attr[i].ptr && g_attr[i].size == 3 && g_attr[i].type == 0x1406)
+            a = &g_attr[i];
+    if (!a)
+        return;
+    const float *m = g_ui_mat[g_cur_prog].m;
+    size_t stride = a->stride ? (size_t)a->stride : 12;
+    float x0 = 1e9f, x1 = -1e9f, y0 = 1e9f, y1 = -1e9f;
+    for (GLsizei i = 0; i < n; i++) {
+        const float *f = (const float *)((const uint8_t *)a->ptr + (size_t)(v0 + i) * stride);
+        float nx = m[0] * f[0] + m[1] * f[1] + m[2];
+        float ny = m[3] * f[0] + m[4] * f[1] + m[5];
+        if (nx < x0) x0 = nx;
+        if (nx > x1) x1 = nx;
+        if (ny < y0) y0 = ny;
+        if (ny > y1) y1 = ny;
+    }
+    if (!(x1 >= x0))
+        return;
+    const bool full = (x0 <= -0.9f && x1 >= 0.9f) || (x1 - x0) > 1.6f;
+    float scale = s, shift = 0.0f;
+    if (full) {
+        if (!prog_has_texture(g_cur_prog))
+            scale = 1.0f;
+    } else {
+        /* A label on a button goes where the button went: the last element drawn that contains this one's middle
+         * decides; failing that the element's own place does. */
+        const float cx = (x0 + x1) * 0.5f, cy = (y0 + y1) * 0.5f;
+        int cls = 2;
+        for (size_t i = g_ui_cur.size(); i-- > 0 && cls == 2;) {
+            const UiRect &r = g_ui_cur[i];
+            if (cx >= r.x0 && cx <= r.x1 && cy >= r.y0 && cy <= r.y1)
+                cls = r.cls;
+        }
+        if (cls == 2)
+            cls = x0 <= -0.9f ? -1 : x1 >= 0.9f ? 1 : cx < -0.4f ? -1 : cx > 0.4f ? 1 : 0;
+        shift = cls < 0 ? s - 1.0f : cls > 0 ? 1.0f - s : 0.0f;
+        if (g_ui_cur.size() < 4096)
+            g_ui_cur.push_back({ x0, x1, y0, y1, cls });
+    }
+    float want[6] = { m[0] * scale, m[1] * scale, m[2] * scale + shift, m[3], m[4], m[5] };
+    const float *held = g_ui_sent[g_cur_prog].valid ? g_ui_sent[g_cur_prog].m : m;
+    if (memcmp(held, want, sizeof(want)) == 0)
+        return;
+    int32_t h[4] = { 4, g_loc_2d[g_cur_prog], 2, 0 };
+    send_msg(GB_OP_UNIFORM_V, h, sizeof(h), want, sizeof(want));
+    g_ui_sent[g_cur_prog].valid = true;
+    memcpy(g_ui_sent[g_cur_prog].m, want, sizeof(want));
+}
+
+/* Diagnostic: SG_UI_TRACE=<frame> logs the 2D draws of that frame (and the next two), one line per quad. */
+static void ui_trace_draw(const char *kind, GLenum mode, GLsizei count, GLint first, const void *indices, GLenum itype)
+{
+    static long from = -2;
+    if (from == -2) {
+        const char *e = getenv(PORT_ENV_PREFIX "_UI_TRACE");
+        from = e && *e ? atol(e) : -1;
+    }
+    if (from < 0 || g_frames < from || g_frames > from + 1 || g_cur_prog >= (GLuint)kMaxProgs || !g_ui_mat[g_cur_prog].valid)
+        return;
+    int pl = 0;
+    auto it = g_attrib_loc.find(std::make_pair((uint32_t)g_cur_prog, std::string("inPos")));
+    if (it != g_attrib_loc.end())
+        pl = it->second;
+    const Attrib &a = g_attr[pl < kMaxAttribs ? pl : 0];
+    const float *m = g_ui_mat[g_cur_prog].m;
+    trace("ui-draw f%ld %s prog=%u tex=%u mode=0x%x count=%d elembuf=%u pos(size=%d type=0x%x stride=%d client=%d) "
+          "mat=[%.4f %.4f %.4f | %.4f %.4f %.4f]",
+          g_frames, kind, g_cur_prog, g_bound_tex[0][0], mode, count, g_elem_buf, a.size, a.type, a.stride,
+          a.client ? 1 : 0, m[0], m[1], m[2], m[3], m[4], m[5]);
+    if (!(a.client && a.ptr && a.type == 0x1406))
+        return;
+    size_t stride = a.stride ? (size_t)a.stride : (size_t)a.size * 4;
+    auto vert = [&](long v, float &nx, float &ny) {
+        const float *f = (const float *)((const uint8_t *)a.ptr + (size_t)v * stride);
+        nx = m[0] * f[0] + m[1] * f[1] + m[2];
+        ny = m[3] * f[0] + m[4] * f[1] + m[5];
+    };
+    const uint8_t *ib = NULL;
+    size_t isz = itype == 0x1401 ? 1 : itype == 0x1403 ? 2 : 4;
+    std::vector<uint8_t> *sh = NULL;
+    if (kind[0] == 'e') {
+        if (g_elem_buf == 0)
+            ib = (const uint8_t *)indices;
+        else if ((sh = elem_shadow(g_elem_buf)) && (size_t)(uintptr_t)indices + (size_t)count * isz <= sh->size())
+            ib = sh->data() + (size_t)(uintptr_t)indices;
+    }
+    auto index = [&](long i) -> long {
+        if (!ib) return first + i;
+        return isz == 1 ? ib[i] : isz == 2 ? ((const uint16_t *)ib)[i] : (long)((const uint32_t *)ib)[i];
+    };
+    int per = mode == 0x4 ? 6 : mode == 0x5 ? count : 3;
+    for (long q = 0; q * per < count && q < 80; q++) {
+        float x0 = 9, x1 = -9, y0 = 9, y1 = -9;
+        for (int k = 0; k < per && q * per + k < count; k++) {
+            float nx, ny;
+            vert(index(q * per + k), nx, ny);
+            if (nx < x0) x0 = nx;
+            if (nx > x1) x1 = nx;
+            if (ny < y0) y0 = ny;
+            if (ny > y1) y1 = ny;
+        }
+        float W = m[0] != 0 ? 2.0f / m[0] : 0, H = m[4] != 0 ? -2.0f / m[4] : 0;
+        trace("  q%ld px x[%.0f %.0f] y[%.0f %.0f]  (screen %.0fx%.0f)", q, (x0 + 1) * W / 2, (x1 + 1) * W / 2,
+              (1 - y1) * H / 2, (1 - y0) * H / 2, W, H);
+    }
+}
+
 static void gb_glDrawArrays(GLenum mode, GLint first, GLsizei count)
 {
+    ui_trace_draw("arrays", mode, count, first, NULL, 0);
     if (count <= 0)
         return;
     Lock l;
     std::vector<Block> blocks;
     collect_client(first, count, blocks);
+    ui_adapt(first, count);
     size_t payload = 16 + blocks_bytes(blocks);
     msg_begin(GB_OP_DRAW_ARRAYS, payload);
     int32_t h[4] = { (int32_t)mode, first, count, (int32_t)blocks.size() };
@@ -1051,6 +1276,7 @@ static void gb_glDrawElements(GLenum mode, GLsizei count, GLenum type, const voi
 {
     if (count <= 0)
         return;
+    ui_trace_draw("elements", mode, count, 0, indices, type);
     Lock l;
     std::vector<Block> blocks;
     const bool client_indices = g_elem_buf == 0;
@@ -1092,6 +1318,8 @@ static void gb_glDrawElements(GLenum mode, GLsizei count, GLenum type, const voi
         }
     }
 
+    if (!blocks.empty())
+        ui_adapt((GLint)lo, (GLsizei)(hi - lo) + 1);
     /* Only vertices [lo, hi] travel; the host leaves room for the ones before them, so the indices
      * still mean what they meant. */
     size_t payload = 28 + blocks_bytes(blocks) + (client_indices ? pad4(idx_bytes) : 0);
@@ -1356,6 +1584,8 @@ static GLint location(int op, std::map<std::pair<uint32_t, std::string>, int> &c
     int32_t loc = query_int(op, { (int32_t)program }, name, strlen(name) + 1);
     Lock l;
     cache[key] = loc;
+    if (op == GB_OP_Q_UNIFORM_LOC)
+        note_uniform_loc(program, key.second, loc);
     return loc;
 }
 
@@ -1439,6 +1669,7 @@ static const Entry kEntries[] = {
     /* State filters first: the first match wins over the generated stubs. */
     { "glUseProgram", (void *)gbf_glUseProgram },
     { "glActiveTexture", (void *)gbf_glActiveTexture },
+    { "glBindFramebuffer", (void *)gbf_glBindFramebuffer },
     { "glBindTexture", (void *)gbf_glBindTexture },
     { "glUniform1i", (void *)gbf_glUniform1i },
     { "glUniform1f", (void *)gbf_glUniform1f },
@@ -1562,8 +1793,41 @@ extern "C" void gl_bridge_profile_step(int begin)
     }
 }
 
+/*
+ * A touch on the panel back to the engine's logical clip-space x. nd, ny: where the finger is (clip space of the panel);
+ * the element that was drawn there last frame says how it was moved, and the finger keeps that answer until it lifts
+ * (a drag that leaves a button must not change its mapping). Over no element the touch is stretched, as the plain
+ * viewport would have it.
+ */
+extern "C" float gl_ui_unmap_x(float nd, float ny, int id, int action)
+{
+    static int cls_of[32];
+    float s = gl_screen_aspect_fix();
+    if (s >= 0.999f)
+        return nd;
+    id &= 31;
+    if (action == 1) {
+        int c = 2;
+        for (size_t i = g_ui_prev.size(); i-- > 0 && c == 2;) {
+            const UiRect &r = g_ui_prev[i];
+            const float a = ui_forward(r.x0, r.cls, s) - 0.02f, b = ui_forward(r.x1, r.cls, s) + 0.02f;
+            if (nd >= a && nd <= b && ny >= r.y0 - 0.02f && ny <= r.y1 + 0.02f)
+                c = r.cls;
+        }
+        cls_of[id] = c;
+    }
+    switch (cls_of[id]) {
+    case -1: return (nd + 1.0f) / s - 1.0f;
+    case 1:  return (nd - 1.0f) / s + 1.0f;
+    case 0:  return nd / s;
+    default: return nd;
+    }
+}
+
 extern "C" void gl_bridge_swap(void)
 {
+    g_ui_prev.swap(g_ui_cur);
+    g_ui_cur.clear();
     Lock l;
     send_msg(GB_OP_SWAP, NULL, 0, NULL, 0);
     out_flush();

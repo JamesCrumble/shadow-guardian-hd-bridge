@@ -87,31 +87,63 @@ final class GameProcess {
     }
 
     /**
-     * The engine renders at whatever size it is told, so use the phone's own aspect ratio and let the
-     * compositor scale the surface to the panel. resolution.txt ("1280x590") next to the log overrides it.
+     * Screen modes (SCREEN_MODE in the settings; stretch.flag next to the log still means "stretch"):
+     *  - adapt (default): the engine keeps its own 5:3 layout, the picture fills the phone's whole screen, and the
+     *    GL bridge undoes the stretching per draw - interface elements keep their proportions and sit at the
+     *    left, centre or right edge, the 3D scene gets the wider field of view (portbase gl_bridge.cpp, ui_adapt);
+     *  - fit: 5:3 with black bars at the sides;
+     *  - stretch: 5:3 stretched over the whole screen, as the engine would do it.
+     * The engine never sees the real aspect: Shadow Guardian picks its sprite set and lays out its interface by it,
+     * and wider than 16:9 it breaks (buttons off screen, sprites_1_7 that a community cache does not have).
+     * renderW x renderH is the panel (the surface and what the touch overlay maps against); logicalW x logicalH is
+     * what the engine thinks the screen is. resolution.txt ("1280x590") next to the log overrides the logical size.
      */
     private void chooseRenderSize() {
         android.util.DisplayMetrics m = ctx.getResources().getDisplayMetrics();
         int longSide = Math.max(m.widthPixels, m.heightPixels), shortSide = Math.min(m.widthPixels, m.heightPixels);
+        java.util.Map<String, String> st = SettingsActivity.load(ctx);
         int h = 720;
-        try { h = Integer.parseInt(SettingsActivity.load(ctx).getOrDefault("RENDER_HEIGHT", "720")); } catch (NumberFormatException ignored) { }
+        try { h = Integer.parseInt(st.getOrDefault("RENDER_HEIGHT", "720")); } catch (NumberFormatException ignored) { }
         h = Math.max(240, Math.min(h, 2160)) & ~1;
-        // Shadow Guardian lays its 2D interface out for the 800x480 (5:3) panel it was made for and stretches it
-        // to whatever it is given; so it renders at 5:3 and the activity pillarboxes it. stretch.flag next to the
-        // log fills the whole screen instead.
-        stretch = new File(logFile.getParentFile(), "stretch.flag").exists();
-        int w = Math.round(h * (stretch ? (float) longSide / shortSide : 5f / 3f)) & ~1;
+        screenMode = st.getOrDefault("SCREEN_MODE", "adapt");
+        if (new File(logFile.getParentFile(), "stretch.flag").exists()) screenMode = "stretch";
+        if (!screenMode.equals("fit") && !screenMode.equals("stretch")) screenMode = "adapt";
+        int w = Math.round(h * 5f / 3f) & ~1;
         String over = readText(new File(logFile.getParentFile(), "resolution.txt")).trim();
         java.util.regex.Matcher mt = java.util.regex.Pattern.compile("(\\d+)x(\\d+)").matcher(over);
         if (mt.matches()) {
             w = Integer.parseInt(mt.group(1));
             h = Integer.parseInt(mt.group(2));
         }
-        renderW = Math.max(320, Math.min(w, 4096));
-        renderH = Math.max(240, Math.min(h, 4096));
+        logicalW = Math.max(320, Math.min(w, 4096));
+        logicalH = Math.max(240, Math.min(h, 4096));
+        if (screenMode.equals("fit")) {
+            renderW = logicalW;
+            renderH = logicalH;
+        } else {
+            renderW = Math.max(logicalW, Math.round(logicalH * (float) longSide / shortSide) & ~1);
+            renderH = logicalH;
+        }
     }
 
-    private boolean stretch;
+    private String screenMode = "adapt";
+    private int logicalW = 1200, logicalH = 720;
+
+    /** How much the engine's picture is stretched horizontally on the panel, inverted: 1 when it is not corrected. */
+    private float adaptFactor() {
+        if (!screenMode.equals("adapt") || renderW <= logicalW) return 1f;
+        return ((float) logicalW / logicalH) / ((float) renderW / renderH);
+    }
+
+    /**
+     * A touch at (xf, yf), fractions of the view, in what the port expects. When the picture is adapted the x goes in
+     * panel pixels and the port maps it back through the interface layout it drew (input_bridge.cpp); otherwise it is
+     * the engine's own logical pixel.
+     */
+    int[] mapTouch(float xf, float yf, int id, int action) {
+        float w = adaptFactor() < 0.999f ? renderW : logicalW;
+        return new int[] { Math.round(Math.max(0f, Math.min(1f, xf)) * w), Math.round(Math.max(0f, Math.min(1f, yf)) * logicalH) };
+    }
 
     int renderWidth() { return renderW; }
     int renderHeight() { return renderH; }
@@ -220,17 +252,33 @@ final class GameProcess {
         binary.setExecutable(true, true);
         new File(sysroot, "lib/ld-linux-armhf.so.3").setExecutable(true, true);
 
-        File game = new File(root, "game");
+        // Which build of the game to run: GAME_EDITION in the settings ("auto" takes the first one found complete).
+        // They share one game folder (progress carries over); the APK's files are re-extracted on a switch.
+        File external = ctx.getExternalFilesDir(null);
+        java.util.Map<String, Editions.Files> found = Editions.scan(external);
+        edition = Editions.choose(SettingsActivity.load(ctx).get("GAME_EDITION"), found);
+        Editions.Files files = found.get(edition);
+        if (!files.complete()) {
+            StringBuilder have = new StringBuilder();
+            for (String e : Editions.ALL) {
+                Editions.Files f = found.get(e);
+                if (f.apk != null || f.zip != null || f.unpacked != null)
+                    have.append("\n  ").append(Editions.title(e)).append(": ")
+                            .append(f.complete() ? "всё на месте" : "нет " + f.missing());
+            }
+            throw new IOException("Для версии «" + Editions.title(edition) + "» не хватает: " + files.missing() + ".\n"
+                    + "Положите файлы в папку:\n" + (external == null ? "Android/data/" + ctx.getPackageName() + "/files" : external.getPath())
+                    + (have.length() > 0 ? "\n\nНайдено:" + have : "") + "\n\nВерсию можно сменить в настройках.");
+        }
+        editionNote = "edition " + edition + ": apk " + files.apk.getName()
+                + ", cache " + (files.zip != null ? files.zip.getName() : files.unpacked.getPath());
+
+        File game = gameDir();
         File libDir = new File(game, "lib/armeabi-v7a");
         libDir.mkdirs();
 
-        File external = ctx.getExternalFilesDir(null);
-        File apk = external == null ? null : firstWithSuffix(external, ".apk");
-        if (apk == null) {
-            throw new IOException("Не найден оригинальный APK игры (Shadow Guardian HD 1.0.1).\nПоложите его в папку:\n"
-                    + (external == null ? "Android/data/" + ctx.getPackageName() + "/files" : external.getPath()));
-        }
         // From the game's APK only the library, assets/ and the raw resources GLResLoader reads; once per APK.
+        File apk = files.apk;
         String apkStamp = apk.length() + ":" + apk.lastModified();
         File apkStampFile = new File(game, "apk.stamp");
         if (!apkStamp.equals(readText(apkStampFile).trim()) || !new File(libDir, "libshadowguardian.so").exists()) {
@@ -242,20 +290,27 @@ final class GameProcess {
         }
 
         // The cache. The zip lies next to the APK as it is: the port mounts it over the data directory and reads
-        // entries out of it on demand (game/zip_mount.cpp), nothing is unpacked. A folder GloftSGHP/ unpacked by
-        // hand next to the APK works as well.
-        cacheZip = firstWithSuffix(external, ".zip");
-        File unpacked = new File(external, "GloftSGHP");
+        // entries out of it on demand (game/zip_mount.cpp), nothing is unpacked. A folder unpacked by hand next to
+        // the APK works as well.
+        cacheZip = files.zip;
         File dataDir = new File(game, "GloftSGHP");
-        if (cacheZip == null && new File(unpacked, "states").exists()) {
+        if (cacheZip == null) {
             if (!isSymlink(dataDir)) deleteTree(dataDir);
-            linkOrCopy(unpacked, dataDir);
-        } else if (cacheZip == null) {
-            throw new IOException("Не найден кэш игры.\nПоложите zip-архив с кэшем (GloftSGHP.zip) рядом с APK игры, в папку:\n"
-                    + external.getPath());
+            linkOrCopy(files.unpacked, dataDir);
         } else if (isSymlink(dataDir)) {
             dataDir.delete();
         }
+    }
+
+    private String edition = Editions.ORIGINAL, editionNote = "";
+
+    /**
+     * One game folder for both editions, so progress is shared: the engine writes settings, a and rls into
+     * GloftSGHP/ and its saves/ here, in the same format in both builds. Only lib/, assets/ and res/ belong to
+     * the edition's APK, and they are extracted again when the APK changes (apk.stamp).
+     */
+    private File gameDir() {
+        return new File(root, "game");
     }
 
     private File cacheZip;
@@ -310,6 +365,7 @@ final class GameProcess {
         Os.mkfifo(glCmd.getPath(), 0600);
         Os.mkfifo(glReply.getPath(), 0600);
         logFile.delete();
+        appendLog("[wrapper] " + editionNote);
         gl.start();
 
         ProcessBuilder b = new ProcessBuilder(qemu.getPath());
@@ -328,7 +384,7 @@ final class GameProcess {
         b.command().add("-L");
         b.command().add(new File(root, "sysroot").getPath());
         b.command().add(new File(root, "bin/shadowguardian").getPath());
-        b.command().add(new File(root, "game").getPath());
+        b.command().add(gameDir().getPath());
         Map<String, String> env = b.environment();
         env.put("HOME", new File(root, "home").getPath());
         env.put("SDL_VIDEODRIVER", "offscreen");
@@ -343,8 +399,16 @@ final class GameProcess {
         env.put("SG_GL_BRIDGE", "1");
         env.put("SG_GL_CMD", glCmd.getPath());
         env.put("SG_GL_REPLY", glReply.getPath());
-        env.put("SG_WIDTH", String.valueOf(renderW));
-        env.put("SG_HEIGHT", String.valueOf(renderH));
+        // The engine's screen is the logical one; a wider panel is mapped onto by the port (SCALE=stretch) and corrected
+        // by the GL bridge in adapt mode.
+        env.put("SG_WIDTH", String.valueOf(logicalW));
+        env.put("SG_HEIGHT", String.valueOf(logicalH));
+        if (renderW != logicalW || renderH != logicalH) {
+            env.put("SG_PANEL_W", String.valueOf(renderW));
+            env.put("SG_PANEL_H", String.valueOf(renderH));
+            env.put("SG_SCALE", "stretch");
+            if (screenMode.equals("adapt")) env.put("SG_UI_ADAPT", "1");
+        }
         env.put("SG_FB_PROBE_INTERVAL", "0");
         env.put("SG_CURSOR", "0");
         // An ordinary touch phone to the engine: its own on-screen controls, no PowerA pad until one is used.
@@ -366,7 +430,13 @@ final class GameProcess {
         // settings.txt is written by SettingsActivity and wins over engine_env.txt (RENDER_HEIGHT is ours, not the engine's).
         for (java.util.Map.Entry<String, String> e : SettingsActivity.load(ctx).entrySet())
             if (!e.getKey().equals("RENDER_HEIGHT") && !e.getKey().startsWith("Q_") && !e.getKey().equals("CPU_PRIME")
-                    && !e.getKey().equals("AUDIO_LATENCY_MS") && !e.getKey().equals("PERF_HINT")) env.put(e.getKey(), e.getValue());
+                    && !e.getKey().equals("AUDIO_LATENCY_MS") && !e.getKey().equals("PERF_HINT")
+                    && !e.getKey().equals("GAME_EDITION") && !e.getKey().equals("GAME_LANG") && !e.getKey().equals("SCREEN_MODE")) env.put(e.getKey(), e.getValue());
+        // Language: GAME_LANG is an engine index, or "auto" for the phone's language.
+        int lang = Editions.phoneLanguage(edition);
+        try { lang = Integer.parseInt(SettingsActivity.load(ctx).getOrDefault("GAME_LANG", "auto")); } catch (NumberFormatException ignored) { }
+        env.put("SG_LANG_INDEX", String.valueOf(lang));
+        appendLog("[wrapper] language index " + lang);
         applyQualityOverrides(dir, overrides, env);
         // Our qemu: guest syscall counts every 10 s in the log (which ones leave translated code most often).
         env.put("QEMU_SYSCALL_STATS", "1");
@@ -607,13 +677,6 @@ final class GameProcess {
             out.write((line + "\n").getBytes("US-ASCII"));
         } catch (IOException ignored) {
         }
-    }
-
-    private static File firstWithSuffix(File dir, String suffix) {
-        File[] files = dir.listFiles((d, n) -> n.endsWith(suffix));
-        if (files == null || files.length == 0) return null;
-        Arrays.sort(files);
-        return files[0];
     }
 
     private static int intField(String s, String key) {

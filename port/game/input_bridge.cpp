@@ -49,10 +49,23 @@ void android_input_init(so_module *mod, _JNIEnv *env, int width, int height)
  * appInit); touches before that would land on null state. */
 static bool ready(void) { return g_ticks >= 30; }
 
+extern "C" float gl_screen_aspect_fix(void);
+extern "C" float gl_ui_unmap_x(float nd, float ny, int id, int action);
+extern "C" int gl_screen_panel_width(void);
+
 bool android_input_inject_touch(int action, int x, int y, int id)
 {
     if (!ready() || !g_touch)
         return false;
+    /* Screen adaptation: the wrapper sends x in panel pixels; the interface was moved per element when it was drawn,
+     * so the touch goes back through the same layout (gl_bridge.cpp) to the engine's own 5:3 pixel. */
+    if (gl_screen_aspect_fix() < 0.999f && gl_screen_panel_width() > 0 && g_width > 0 && g_height > 0) {
+        float nd = 2.0f * (float)x / (float)gl_screen_panel_width() - 1.0f;
+        float ny = 1.0f - 2.0f * (float)y / (float)g_height;
+        float n = gl_ui_unmap_x(nd, ny, id, action);
+        n = n < -1.0f ? -1.0f : n > 1.0f ? 1.0f : n;
+        x = (int)((n + 1.0f) * 0.5f * (float)g_width + 0.5f);
+    }
     g_touch(g_env, (jclass)sg_class_surfaceview(), action, x, y, id);
     return true;
 }

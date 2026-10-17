@@ -86,7 +86,28 @@ public final class SettingsActivity extends Activity {
         col.addView(text("Shadow Guardian HD — настройки", 22, FG, true));
         col.addView(text("Настрой и нажми «Играть» — игра стартует с этими значениями.", 13, DIM, false));
 
+        col.addView(section("Версия игры"));
+        java.util.Map<String, Editions.Files> found = Editions.scan(getExternalFilesDir(null));
+        StringBuilder have = new StringBuilder();
+        for (String e : Editions.ALL) {
+            Editions.Files f = found.get(e);
+            have.append(Editions.title(e)).append(": ")
+                    .append(f.complete() ? "найдено" : f.apk == null && f.zip == null && f.unpacked == null ? "нет файлов" : "нет " + f.missing())
+                    .append('\n');
+        }
+        col.addView(choiceStr("Какую игру запускать", "GAME_EDITION", new String[] { "auto", Editions.ORIGINAL, Editions.COMMUNITY },
+                new String[] { "Авто", "Оригинал", "Сообщество" }, "auto",
+                have + "Авто — первая из найденных. У каждой версии свои сохранения. Файлы определяются по содержимому, имена не важны."));
+        col.addView(choiceStr("Язык игры", "GAME_LANG", new String[] { "auto", "0", "1", "2", "3", "4", "5", "6", "7" },
+                new String[] { "Авто", "EN", "FR / RU", "ES", "IT / UK", "DE", "PT", "JA", "KO" }, "auto",
+                "Авто — язык телефона. В версии «сообщество» вместо французского русский, вместо итальянского украинский. "
+                        + "Если язык уже выбран в меню самой игры, она может использовать его."));
+
         col.addView(section("Картинка"));
+        col.addView(choiceStr("Экран", "SCREEN_MODE", new String[] { "adapt", "fit", "stretch" },
+                new String[] { "Адаптивный", "5:3 с полями", "Растянуть" }, "adapt",
+                "Адаптивный — картинка на весь экран: кнопки и текст не растягиваются и прижаты к краям, сцена шире. "
+                        + "5:3 — как в оригинале, с чёрными полями. Растянуть — всё на весь экран, с искажением."));
         col.addView(slider("Угол обзора (FOV)", "SG_FOV_PERCENT", 100, 220, 5, 160, " %",
                 "100 % — как в оригинале. Больше — шире обзор; интерфейс может немного смещаться."));
         col.addView(choice("Разрешение рендера (высота)", "RENDER_HEIGHT", new int[] { 480, 540, 720 }, 720, "p",
@@ -248,6 +269,37 @@ public final class SettingsActivity extends Activity {
                 for (int j = 0; j < bs.length; j++) bs[j].setAlpha(options[j] == o ? 1f : 0.45f);
             });
             b.setAlpha(o == cur ? 1f : 0.45f);
+            line.addView(b, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        }
+        row.addView(line);
+        row.addView(text(hint, 12, DIM, false));
+        return row;
+    }
+
+    private View choiceStr(String title, String key, String[] options, String[] labels, String def, String hint) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.VERTICAL);
+        row.setPadding(0, px(10), 0, px(4));
+        row.addView(text(title, 16, FG, false));
+        LinearLayout line = new LinearLayout(this);
+        line.setOrientation(LinearLayout.HORIZONTAL);
+        line.setGravity(Gravity.START);
+        String cur = values.getOrDefault(key, def);
+        Button[] bs = new Button[options.length];
+        for (int i = 0; i < options.length; i++) {
+            final String o = options[i];
+            Button b = new Button(this);
+            b.setAllCaps(false);
+            b.setText(labels[i]);
+            b.setMinWidth(0);
+            b.setMinimumWidth(0);
+            b.setPadding(px(4), 0, px(4), 0);
+            bs[i] = b;
+            b.setOnClickListener(v -> {
+                values.put(key, o);
+                for (int j = 0; j < bs.length; j++) bs[j].setAlpha(options[j].equals(o) ? 1f : 0.45f);
+            });
+            b.setAlpha(o.equals(cur) ? 1f : 0.45f);
             line.addView(b, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         }
         row.addView(line);
