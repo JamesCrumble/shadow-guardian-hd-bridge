@@ -462,8 +462,8 @@ public final class MainActivity extends Activity {
 
         /** Touch position in the game's own pixel grid. */
         private void sendCursor(float x, float y) {
-            float gx = x * game.renderWidth() / Math.max(1, getWidth());
-            float gy = y * game.renderHeight() / Math.max(1, getHeight());
+            int[] g = game.mapTouch(x / Math.max(1, getWidth()), y / Math.max(1, getHeight()), 31, 1);
+            float gx = g[0], gy = g[1];
             game.command(String.format(Locale.US, "cursor %.1f %.1f", gx, gy), "cursor");
         }
 
@@ -561,8 +561,8 @@ public final class MainActivity extends Activity {
             if (action == 1) fingerDown[id] = true;
             else if (action == 0) { if (!fingerDown[id]) return; fingerDown[id] = false; }
             else if (!fingerDown[id]) return;
-            int gx = Math.round(e.getX(index) * game.renderWidth() / Math.max(1, getWidth()));
-            int gy = Math.round(e.getY(index) * game.renderHeight() / Math.max(1, getHeight()));
+            int[] g = game.mapTouch(e.getX(index) / Math.max(1, getWidth()), e.getY(index) / Math.max(1, getHeight()), id, action);
+            int gx = g[0], gy = g[1];
             fingerX[id] = gx;
             fingerY[id] = gy;
             // Moves of one finger replace each other while queued; presses and releases never do.

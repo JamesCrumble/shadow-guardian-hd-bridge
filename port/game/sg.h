@@ -48,6 +48,10 @@ const char *sg_zip_mount_resolve(const char *path, char *buf, size_t bufsz);
  * kept: copy the archived file to disk. */
 bool sg_zip_mount_copy_up(const char *path);
 
+/* True when the data has a directory `name` at its top: on disk (an unpacked
+ * cache) or in the archive. Tells the editions apart (see main.cpp). */
+bool sg_data_has_dir(const char *name);
+
 /* Counters for the summary line. */
 long sg_zip_mount_served(void);
 long sg_zip_mount_inflated(void);

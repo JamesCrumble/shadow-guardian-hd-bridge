@@ -282,11 +282,23 @@ int main(int argc, char **argv)
     if (sg_get_info) {
         /* onCreate: country, device id ("GL_00" when the IMEI is unreadable),
          * MANUFACTURER_MODEL, Build.VERSION.RELEASE, MANUFACTURER, MODEL, PRODUCT. */
+        /* The engine picks its shader set by device: a Galaxy S (GT-I9000) reads shaders_galaxy_s/, anything
+         * else shaders/. The original cache ships both, the community one (UK+RU) only shaders/ - with a
+         * Galaxy S it finds no render passes and crashes at the first menu material. So the device follows
+         * the data; SG_DEVICE_MAKER / SG_DEVICE_MODEL override it. */
+        const bool galaxy = sg_data_has_dir("shaders_galaxy_s");
+        const char *maker = port_getenv("DEVICE_MAKER"), *model = port_getenv("DEVICE_MODEL");
+        if (!maker || !*maker) maker = galaxy ? "samsung" : "OnePlus";
+        if (!model || !*model) model = galaxy ? "GT-I9000" : "CPH2655";
+        trace("device for the engine: %s %s (%s)", maker, model,
+              galaxy ? "the data has shaders_galaxy_s/" : "no shaders_galaxy_s/ in the data: shaders/");
+        char combined[96];
+        snprintf(combined, sizeof(combined), "%s_%s", maker, model);
         sg_get_info(env, cls_sg,
                     env->NewStringUTF("US"), env->NewStringUTF("GL_00"),
-                    env->NewStringUTF("samsung_GT-I9000"), env->NewStringUTF("2.3.6"),
-                    env->NewStringUTF("samsung"), env->NewStringUTF("GT-I9000"),
-                    env->NewStringUTF("GT-I9000"));
+                    env->NewStringUTF(combined), env->NewStringUTF("2.3.6"),
+                    env->NewStringUTF(maker), env->NewStringUTF(model),
+                    env->NewStringUTF(model));
         trace("ShadowGuardian.nativeGetInfo returned");
     }
     if (res_init) {
