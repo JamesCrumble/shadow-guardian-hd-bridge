@@ -6,11 +6,14 @@ Shadow Guardian HD (Gameloft, v1.0.1, только 32-бит) на 64-битно
 1. Установить ShadowGuardian-Bridge-<версия>.apk (приложение "Shadow Guardian HD",
    пакет com.jamescrumble.shadowguardian).
 
-2. Запустить приложение один раз и закрыть: появится папка
+2. Запустить приложение и разрешить доступ ко всем файлам (приложение предложит само). Оно создаст папку
 
-   /sdcard/Android/data/com.jamescrumble.shadowguardian/files/
+   /sdcard/BridgeGames/com.jamescrumble.shadowguardian/
 
-   Положить в неё два файла как есть (по кабелю с компьютера или файловым менеджером):
+   Положить в неё два файла как есть (по кабелю с компьютера или файловым менеджером).
+   Подойдёт и старая папка /sdcard/Android/data/com.jamescrumble.shadowguardian/files/ : читаются обе, а при выданном
+   доступе всё из неё переносится в BridgeGames само. Без доступа приложение работает с папкой в Android/data.
+
 
        <APK игры 1.0.1>.apk       (не устанавливать, просто файлом)
        <кэш игры>.zip             (НЕ распаковывать)

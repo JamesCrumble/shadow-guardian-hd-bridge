@@ -71,6 +71,21 @@ final class Editions {
         return m;
     }
 
+    /** Scans every folder of the app (main first, then the other one); the first file found for a slot wins. */
+    static Map<String, Files> scanAll(android.content.Context c) {
+        Map<String, Files> all = scan(null);
+        for (File dir : Storage.sources(c)) {
+            Map<String, Files> m = scan(dir);
+            for (String e : ALL) {
+                Files a = all.get(e), f = m.get(e);
+                if (a.apk == null) a.apk = f.apk;
+                if (a.zip == null) a.zip = f.zip;
+                if (a.unpacked == null) a.unpacked = f.unpacked;
+            }
+        }
+        return all;
+    }
+
     private static String editionOfApk(File apk) {
         try (ZipFile z = new ZipFile(apk)) {
             ZipEntry lib = z.getEntry(NATIVE_LIB);
