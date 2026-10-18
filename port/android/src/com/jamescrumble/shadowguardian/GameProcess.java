@@ -59,7 +59,7 @@ final class GameProcess {
     private final File commandsFile;
     private final File statusFile;
     private final File fifo;
-    private final File logFile;
+    private volatile File logFile;
     private final LinkedList<Cmd> queue = new LinkedList<>();
     private volatile boolean running;
     private volatile boolean muted = true;
@@ -76,8 +76,7 @@ final class GameProcess {
         commandsFile = new File(control, "commands");
         statusFile = new File(control, "status.json");
         fifo = new File(root, "audio.pcm");
-        File external = ctx.getExternalFilesDir(null);
-        logFile = new File(external != null ? external : root, "sg.log");
+        logFile = new File(Storage.mainDir(ctx), "sg.log");
         // pad_overlay.flag next to the log brings back the wrapper's own gamepad-style overlay.
         touchMode = !new File(logFile.getParentFile(), "pad_overlay.flag").exists();
         perf = new PerfHint(ctx, msg -> appendLog("[perf] " + msg));
@@ -109,7 +108,7 @@ final class GameProcess {
         if (new File(logFile.getParentFile(), "stretch.flag").exists()) screenMode = "stretch";
         if (!screenMode.equals("fit") && !screenMode.equals("stretch")) screenMode = "adapt";
         int w = Math.round(h * 5f / 3f) & ~1;
-        String over = readText(new File(logFile.getParentFile(), "resolution.txt")).trim();
+        String over = readText(Storage.find(ctx, "resolution.txt")).trim();
         java.util.regex.Matcher mt = java.util.regex.Pattern.compile("(\\d+)x(\\d+)").matcher(over);
         if (mt.matches()) {
             w = Integer.parseInt(mt.group(1));
@@ -156,6 +155,11 @@ final class GameProcess {
 
     void start() throws Exception {
         stopStale();
+        // With all-files access everything of Android/data/<package>/files moves to BridgeGames/<package>, which
+        // then becomes the main folder; the log and the settings are looked up there from here on.
+        int moved = Storage.migrate(ctx, listener::onStatus);
+        logFile = new File(Storage.mainDir(ctx), logFile.getName());
+        if (moved > 0) appendLog("[wrapper] moved " + moved + " files to " + Storage.mainDir(ctx));
         String migrated = SaveMigration.importIfPresent(ctx);
         if (migrated != null) appendLog("[wrapper] " + migrated);
         prepare();
@@ -254,8 +258,7 @@ final class GameProcess {
 
         // Which build of the game to run: GAME_EDITION in the settings ("auto" takes the first one found complete).
         // They share one game folder (progress carries over); the APK's files are re-extracted on a switch.
-        File external = ctx.getExternalFilesDir(null);
-        java.util.Map<String, Editions.Files> found = Editions.scan(external);
+        java.util.Map<String, Editions.Files> found = Editions.scanAll(ctx);
         edition = Editions.choose(SettingsActivity.load(ctx).get("GAME_EDITION"), found);
         Editions.Files files = found.get(edition);
         if (!files.complete()) {
@@ -267,7 +270,7 @@ final class GameProcess {
                             .append(f.complete() ? "всё на месте" : "нет " + f.missing());
             }
             throw new IOException("Для версии «" + Editions.title(edition) + "» не хватает: " + files.missing() + ".\n"
-                    + "Положите файлы в папку:\n" + (external == null ? "Android/data/" + ctx.getPackageName() + "/files" : external.getPath())
+                    + "Положите файлы в папку:\n" + Storage.describe(ctx)
                     + (have.length() > 0 ? "\n\nНайдено:" + have : "") + "\n\nВерсию можно сменить в настройках.");
         }
         editionNote = "edition " + edition + ": apk " + files.apk.getName()
