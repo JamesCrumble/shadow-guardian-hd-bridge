@@ -74,8 +74,8 @@ GPU телефона. Кэш игры (`GloftSGHP.zip`) не распаковы�
 
 ## Сборка
 
-Сборка идёт в WSL (Ubuntu 20.04). В корень проекта кладутся (в git не входят): `jdk/` (JDK 17), `android-sdk/`
-(build-tools 34.0.0, platform 34, platform-tools), `sdl-arm/` (SDL2 под armhf), `qemu/out/qemu-arm-F.stripped`;
+Сборка идёт в WSL (Ubuntu 20.04). В общую папку `../__shared-third-party__` (одна на все проекты, в git не входит; локальная копия в корне проекта имеет приоритет) кладутся `jdk/` (JDK 17), `android-sdk/`
+(build-tools 34.0.0, platform 34, platform-tools), `sdl-arm/` (SDL2 под armhf); в корень проекта — `qemu/out/qemu-arm-F.stripped`;
 нужен системный armhf-тулчейн (`g++-arm-linux-gnueabihf`).
 
 ```sh

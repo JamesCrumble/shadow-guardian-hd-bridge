@@ -5,8 +5,9 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+tp() { [ -e "$REPO/../${2:-$1}" ] && echo "$REPO/../${2:-$1}" || echo "${SHARED_3P:-$REPO/../../__shared-third-party__}/$1"; }  # third-party: this project first, then ../__shared-third-party__
 OUT="$REPO/android/build/sysroot"
-LIBDIRS=("$REPO/build/sdl-arm/lib" /lib/arm-linux-gnueabihf /usr/lib/arm-linux-gnueabihf /usr/arm-linux-gnueabihf/lib)
+LIBDIRS=("$(tp sdl-arm)/lib" /lib/arm-linux-gnueabihf /usr/lib/arm-linux-gnueabihf /usr/arm-linux-gnueabihf/lib)
 STRIP=arm-linux-gnueabihf-strip
 
 rm -rf "$OUT"
@@ -39,7 +40,7 @@ for l in libEGL.so.1 libGL.so.1 libGLESv2.so.2 libEGL_mesa.so.0 libgcc_s.so.1 \
     enqueue "$l"
 done
 
-while read -r n; do enqueue "$n"; done < <(needed "$REPO/build/nova3")
+while read -r n; do enqueue "$n"; done < <(needed "$REPO/build/shadowguardian")
 
 DRI=/usr/lib/arm-linux-gnueabihf/dri/swrast_dri.so
 cp "$DRI" "$OUT/usr/lib/arm-linux-gnueabihf/dri/swrast_dri.so"
